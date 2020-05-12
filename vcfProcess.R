@@ -73,7 +73,7 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",samples2remove=NULL
   } else {print("No low quality variants")}
   
    ######### Remove overlapping variants
-  if (length(grep("*",vcf[,5],fixed = T))>1 & caller="GATK"){
+  if (length(grep("*",vcf[,5],fixed = T))>1 & caller=="GATK"){
     overlap_mat<-vcf[grep("*",vcf[,5],fixed = T),]
     colnames(overlap_mat)<-c(head_start,names)
     vcf<-vcf[-grep("*",vcf[,5],fixed = T),]
