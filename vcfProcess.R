@@ -2,18 +2,19 @@
 #' @param inputfile Single or multisample VCF file
 #' @param outputfile Prefix for output files
 #' @param caller Variant calling software used ("SAMtools" or "GATK", default= "SAMtools")
-#' @param samples2remove If is not NULL, removes named samples from multisample inputs
+#' @param no.Cores Number of CPU cores to use - if >1, script will run some parallelization 
+#' @param samples2remove Removes named samples from multisample inputs (default=NULL)
 #' @param indelProcess Process INDEL variants (requires indelProcess_vcfProcess.R)
-#' @param DP_low Minimum read depth to consider call
-#' @param lowqual Minimum variant quality to consider call
-#' @param hetProp Proportion allele frequency at hSNPs to assign call
-#' @param misPercent Percentage of sites missing across samples to remove variant
+#' @param DP_low Minimum read depth to consider call (default=5)
+#' @param lowqual Minimum variant quality to consider call (defauly=20)
+#' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
+#' @param misPercent Percentage of sites missing across samples to remove variant (default=80)
 #' @param repeatfile .csv file with start and stop coordinates for regions to remove variants
 #' @param excludeMix If true, will remove samples with a high likelihood of mixed infection (requires MixInfect_vcfProcess.R)
 #' @return filtered .vcf and .csv variant files, optional INDEL file and mixed infection files
 #' @export
 
-vcfProcess = function(inputfile,outputfile,caller="SAMtools",samples2remove=NULL,indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,misPercent=80,repeatfile=NULL,excludeMix=FALSE){
+vcfProcess = function(inputfile,outputfile,caller="SAMtools",no.Cores=1,samples2remove=NULL,indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,misPercent=80,repeatfile=NULL,excludeMix=FALSE){
   
   ######################################   VCF FILE POST PROCESSING  ##################################
   
@@ -72,7 +73,7 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",samples2remove=NULL
     write.csv(lowqual_mat,file=paste0(outputfile,"_lowqualVariants.csv"),row.names = F)
   } else {print("No low quality variants")}
   
-   ######### Remove overlapping variants
+  ######### Remove overlapping variants
   if (length(grep("*",vcf[,5],fixed = T))>1 & caller=="GATK"){
     overlap_mat<-vcf[grep("*",vcf[,5],fixed = T),]
     colnames(overlap_mat)<-c(head_start,names)
@@ -114,15 +115,56 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",samples2remove=NULL
   }
   
   ####### ALLELE ASSIGNING #######################################################################
-  
-   output=matrix("N",nrow(genotype),ncol(genotype))
-  rownames(output)=rownames(genotype)
-  colnames(output)=colnames(genotype)
   mixed_sites<-matrix(c("R","GA","AG","M","CA","AC","W","TA","AT","Y","TC","CT","S","GC","CG","K","TG","GT"),ncol=3,byrow = T)
   alt_allele<-strsplit(genotype[,2],split = ",")
   max_length <- max(unlist(lapply(strsplit(genotype[,2],split = ","), length)))
   
-  for (i in 1:nrow(genotype)){
+  if (no.Cores>1){
+    if (!require(foreach)){
+      install.packages("foreach",repos = "http://cran.us.r-project.org")
+      library(foreach)
+    }
+    if (!require(doMC)){
+      install.packages("doMC",repos = "http://cran.us.r-project.org")
+      library(doMC)
+    }
+    registerDoMC(no.Cores)
+    output<-foreach(i=1:nrow(genotype)) %dopar% {
+      df<-data.frame(matrix("N",ncol=ncol(genotype)))
+      df[1,as.numeric(which(unlist(genotype[i,])=="./."))]<-"N" # Missing
+      df[1,as.numeric(which(unlist(genotype[i,])=="0/0"))]<-genotype[i,1] # Ref call
+      for (j in 1:max_length){
+        df[1,as.numeric(which(unlist(genotype[i,])==paste0(j,"/",j)))]<-unlist(strsplit(genotype[i,2],","))[j]
+      } # Alt call
+      alleles<-c(genotype[i,1],unlist(strsplit(genotype[i,2],",")))
+      for (j in 0:(max_length-1)){
+        for (k in (j+1):max_length){
+          mixed<-which(genotype[i,]==paste0(j,"/",k))
+          if (length(mixed)>0){
+            for (mix in 1:length(mixed)){
+              if (hetProp<1){
+                AD_vec<-as.numeric(unlist(strsplit(AD_comp[i,mixed[mix]],split = ",")))
+                if (sum(AD_vec)>0 && AD_vec[(j+1)]/sum(AD_vec)>hetProp){
+                  df[1,mixed[mix]]<-alleles[j+1]
+                } else if (sum(AD_vec)>0 && AD_vec[k+1]/sum(AD_vec)>hetProp){
+                  df[1,mixed[mix]]<-alleles[k+1]
+                } else {
+                  df[1,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
+              } else {
+                df[1,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
+            } 
+          }
+        }
+      }
+      df
+    }
+    output<- matrix(unlist(output), nrow=length(output), byrow=T)
+    colnames(output)=colnames(genotype)
+  } else {
+    output=matrix("N",nrow(genotype),ncol(genotype))
+    rownames(output)=rownames(genotype)
+    colnames(output)=colnames(genotype)
+    for (i in 1:nrow(genotype)){
       output[i,as.numeric(which(unlist(genotype[i,])=="./."))]<-"N" # Missing
       output[i,as.numeric(which(unlist(genotype[i,])=="0/0"))]<-genotype[i,1] # Ref call
       for (j in 1:max_length){
@@ -134,22 +176,22 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",samples2remove=NULL
           mixed<-which(genotype[i,]==paste0(j,"/",k))
           if (length(mixed)>0){
             for (mix in 1:length(mixed)){
-            if (hetProp<1){
-              AD_vec<-as.numeric(unlist(strsplit(AD_comp[i,mixed[mix]],split = ",")))
-              if (sum(AD_vec)>0 && AD_vec[(j+1)]/sum(AD_vec)>hetProp){
-                output[i,mixed[mix]]<-alleles[j+1]
-              } else if (sum(AD_vec)>0 && AD_vec[k+1]/sum(AD_vec)>hetProp){
-                output[i,mixed[mix]]<-alleles[k+1]
+              if (hetProp<1){
+                AD_vec<-as.numeric(unlist(strsplit(AD_comp[i,mixed[mix]],split = ",")))
+                if (sum(AD_vec)>0 && AD_vec[(j+1)]/sum(AD_vec)>hetProp){
+                  output[i,mixed[mix]]<-alleles[j+1]
+                } else if (sum(AD_vec)>0 && AD_vec[k+1]/sum(AD_vec)>hetProp){
+                  output[i,mixed[mix]]<-alleles[k+1]
+                } else {
+                  output[i,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
               } else {
-                output[i,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
-            } else {
                 output[i,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
             } 
           }
         }
       }
     }
-  
+  }
   output<-output[,3:ncol(output)] 
   
   ######## low read for all mark as 'N' 
@@ -231,7 +273,7 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",samples2remove=NULL
   headrow<-paste0(c(head_start,names),collapse = "\t")
   names(headrow)<-names(header)
   names(vfile)<-names(header)
-  outvcf<-rbind(header,headrow,v)
+  outvcf<-rbind(header,headrow,vfile)
   write.table(outvcf, file= paste0(outputfile,"_processed.vcf"),row.names =FALSE,sep="\t",quote=FALSE,col.names=FALSE)
   
   ########### CSV file with SNP genotypes only with reference sequence and SNP position 
