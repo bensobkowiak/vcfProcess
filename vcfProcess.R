@@ -10,12 +10,11 @@
 #' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
 #' @param misPercent Percentage of sites missing across samples to remove variant (default=80)
 #' @param repeatfile .csv file with start and stop coordinates for regions to remove variants
-#' @param disINDEL Remove SNPs within int distance of INDELs 
 #' @param excludeMix If true, will remove samples with a high likelihood of mixed infection (requires MixInfect_vcfProcess.R)
 #' @return filtered .vcf and .csv variant files, optional INDEL file and mixed infection files
 #' @export
 
-vcfProcess = function(inputfile,outputfile,caller="SAMtools",no.Cores=1,samples2remove=NULL,indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,misPercent=80,repeatfile=NULL,disINDEL=NULL,excludeMix=FALSE){
+vcfProcess = function(inputfile,outputfile,caller="SAMtools",no.Cores=1,samples2remove=NULL,indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,misPercent=80,repeatfile=NULL,excludeMix=FALSE){
   
   if (!require(stringr)){
     install.packages("stringr",repos = "http://cran.us.r-project.org")
@@ -227,25 +226,7 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",no.Cores=1,samples2
     } else {print("No repeat or mobile element SNPs")
     }
   }
-  
-  ####### Remove SNPs within int of INDEL
-  if (!is.null(disINDEL) & length(indelPos)>0){
-    res1=vector()
-    for (i in 1:length(indelPos)){
-      re<-(indelPos[i]-disINDEL):(indelPos[i]+disINDEL)
-      res1<-c(res1,re)   
-    }
-    res<-is.element(as.numeric(vcf[,2]),res1)
-    inds<-cbind(vcf[which(res == 'TRUE'),2],vcf[which(res == 'TRUE'),4],output[which(res=='TRUE'),])
-    colnames(inds)<-c("Position","Reference",names)
-    output<-output[which(res == 'FALSE'),]
-    vcf<-vcf[which(res == 'FALSE'),]
-    if (nrow(inds)!=0){
-      write.csv(inds, file=paste0(outputfile,"_SNPswithin",disINDEL,"bpINDELs.csv"),row.names = F)
-    } else {print("No SNPS within distance of INDELs")
-    }
-  }
-  
+                           
   #### Test for mixed infection, remove mixed samples and reassign mixed calls 
   if (excludeMix){
     result<-MixInfect(vcf,names,output,hetProp,outputfile,format)
