@@ -3,7 +3,7 @@
 #' @param outputfile Prefix for output files
 #' @param caller Variant calling software used ("SAMtools" or "GATK", default= "SAMtools")
 #' @param no.Cores Number of CPU cores to use - if >1, script will run some parallelization 
-#' @param samples2remove Removes named samples from multisample inputs (default=NULL)
+#' @param samples2remove Removes named samples from multisample inputs, can be string of names or .txt file with list of names in single column (default=NULL)
 #' @param indelProcess Process INDEL variants (requires indelProcess_vcfProcess.R)
 #' @param DP_low Minimum read depth to consider call (default=5)
 #' @param lowqual Minimum variant quality to consider call (defauly=20)
@@ -37,7 +37,10 @@ vcfProcess = function(inputfile,outputfile,caller="SAMtools",no.Cores=1,samples2
   
   ###### Remove named samples
   if (!is.null(samples2remove)){
-    remove<-samples2remove
+    if (grep(".txt",samples2remove)){
+      remove<-read.table(samples2remove)[,1]
+    } else {remove<-samples2remove
+    }
     vcf<-vcf[,-(which(is.element(names,remove))+9)]
     names<-names[-which(is.element(names,remove))]
   }
