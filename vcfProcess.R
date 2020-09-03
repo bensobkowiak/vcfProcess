@@ -39,7 +39,7 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
   
   ###### Remove or only include named samples
   if (!is.null(samples2remove)){
-    if (grep(".txt",samples2remove)){
+    if (any(grepl(".txt",samples2remove))){
       remove<-read.table(samples2remove)[,1]
     } else {remove<-samples2remove
     }
