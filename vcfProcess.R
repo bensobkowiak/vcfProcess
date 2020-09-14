@@ -1,7 +1,7 @@
 #' Filter VCF files and convert to FASTA and CSV files
-#' @param inputfile Single or multisample VCF file
+#' @param inputfile Single or multisample SNP or SNP/INDEL VCF file
 #' @param outputfile Prefix for output files
-#' @param caller Variant calling software used ("SAMtools" or "GATK", default= "SAMtools")
+#' @param indelfile Name of file containing INDELs file if separate to SNPs
 #' @param no.Cores Number of CPU cores to use - if >1, script will run some parallelization 
 #' @param samples2remove Samples to remove from multisample inputs, can be string or .txt file in single column (default=NULL)
 #' @param samples2include Samples to include from multisample inputs, can be string or .txt file in single column (default=NULL (keep all samples))
@@ -9,14 +9,18 @@
 #' @param DP_low Minimum read depth to consider call (default=5)
 #' @param lowqual Minimum variant quality to consider call (defauly=20)
 #' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
+#' @param hetasN Code hSNPs as 'N' (TRUE) or by FASTA nucleic acid code (FALSE)
 #' @param misPercent Percentage of sites missing across samples to remove variant (default=80)
 #' @param repeatfile .csv file with start and stop coordinates for regions to remove variants
 #' @param disINDEL Remove SNPs within int distance of INDELs 
 #' @param excludeMix If true, will remove samples with a high likelihood of mixed infection (requires MixInfect_vcfProcess.R)
-#' @return filtered .vcf and .csv variant files, optional INDEL file and mixed infection files
+#' @return filtered .vcf and .csv variant files, optional INDEL and mixed infection files
 #' @export
 
-vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1,samples2remove=NULL,samples2include=NULL,indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,misPercent=80,repeatfile=NULL,disINDEL=NULL,excludeMix=FALSE){
+vcfProcess = function(inputfile,outputfile="output",
+                      indelfile=NULL,no.Cores=1,samples2remove=NULL,samples2include=NULL,
+                      indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,hetasN=TRUE,misPercent=80,
+                      repeatfile=NULL,disINDEL=NULL,excludeMix=FALSE){
   
   if (!require(stringr)){
     install.packages("stringr",repos = "http://cran.us.r-project.org")
@@ -39,7 +43,7 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
   
   ###### Remove or only include named samples
   if (!is.null(samples2remove)){
-    if (any(grepl(".txt",samples2remove))){
+    if (grep(".txt",samples2remove)){
       remove<-read.table(samples2remove)[,1]
     } else {remove<-samples2remove
     }
@@ -74,8 +78,8 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
     write.csv(lowqual_mat,file=paste0(outputfile,"_lowqualVariants.csv"),row.names = F)
   } else {print("No low quality variants")}
   
-  ####### Remove overlapping variants from GATK calls
-  if (length(grep("*",vcf[,5],fixed = T))>1 & caller=="GATK"){
+  ####### Remove spanning deletion variants
+  if (length(grep("*",vcf[,5],fixed = T))>1){
     overlap_mat<-vcf[grep("*",vcf[,5],fixed = T),]
     colnames(overlap_mat)<-c(head_start,names)
     vcf<-vcf[-grep("*",vcf[,5],fixed = T),]
@@ -85,22 +89,33 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
   }
   
   ######## Process INDELs
-  ind<- lapply(1:nrow(vcf), function(i){
-    length(unlist(strsplit(vcf[i,4],"")))>1 || length(unlist(strsplit(unlist(strsplit(vcf[i,5],","))[1],"")))>1
-  }
-  )
-  indels<-vcf[which(ind==TRUE),]
-  indelPos<-indels[,2]
-  colnames(indels)<-c(head_start,names)
-  vcf<-vcf[which(ind==FALSE),]
-  write.csv(indels,file=paste0(outputfile,"_InDels.csv"),row.names = F)
-  if (indelProcess){
-    if (nrow(indels)!=0){
-      indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
-    } else {print("No indels")
+  if (!is.null(indelfile)){
+    indels<-read.table(indelfile)
+    indelPos<-indels[,2]
+    colnames(indels)<-c(head_start,names)
+    if (indelProcess){
+      if (nrow(indels)!=0){
+        indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
+      } else {print("No indels")
+      }
+    }
+  } else {
+    ind<- lapply(1:nrow(vcf), function(i){
+      length(unlist(strsplit(vcf[i,4],"")))>1 || length(unlist(strsplit(unlist(strsplit(vcf[i,5],","))[1],"")))>1
+    }
+    )
+    indels<-vcf[which(ind==TRUE),]
+    indelPos<-indels[,2]
+    colnames(indels)<-c(head_start,names)
+    vcf<-vcf[which(ind==FALSE),]
+    write.csv(indels,file=paste0(outputfile,"_InDels.csv"),row.names = F)
+    if (indelProcess){
+      if (nrow(indels)!=0){
+        indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
+      } else {print("No indels")
+      }
     }
   }
-  
   #### Assign alleles
   genotype<-data.frame(vcf[,4:5])
   AD_comp<-data.frame(vcf[,4:5])
@@ -146,10 +161,12 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
                   df[1,mixed[mix]]<-alleles[j+1]
                 } else if (sum(AD_vec)>0 && AD_vec[k+1]/sum(AD_vec)>hetProp){
                   df[1,mixed[mix]]<-alleles[k+1]
-                } else {
-                  df[1,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
-              } else {
-                df[1,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
+                } else if (hetasN==FALSE){
+                  df[1,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]
+                }
+              } else if (hetasN==FALSE) {
+                df[1,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]
+              }
             } 
           }
         }
@@ -180,9 +197,9 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
                   output[i,mixed[mix]]<-alleles[j+1]
                 } else if (sum(AD_vec)>0 && AD_vec[k+1]/sum(AD_vec)>hetProp){
                   output[i,mixed[mix]]<-alleles[k+1]
-                } else {
+                } else if (hetasN==FALSE) {
                   output[i,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
-              } else {
+              } else if (hetasN==FALSE) {
                 output[i,mixed[mix]]=mixed_sites[which(is.element(mixed_sites[,2],paste0(alleles[j+1],alleles[k+1])) | is.element(mixed_sites[,3],paste0(alleles[j+1],alleles[k+1]))),1]}
             } 
           }
@@ -196,7 +213,7 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
   read<-as.matrix(read[,3:ncol(read)])
   class(read)<-"numeric"
   snprd<-read<DP_low
-  lowread<-which(snprd == 'TRUE') 
+  lowread<-which(snprd | is.na(snprd)) 
   output[lowread]<-'N'
   
   ##### Remove invariant sites 
@@ -211,7 +228,6 @@ vcfProcess = function(inputfile,outputfile="output",caller="SAMtools",no.Cores=1
       }
     }
   }
-  
   new23<-new22[,2:ncol(new22)]
   rd<- lapply(1:nrow(new23), function(i){
     all(as.logical(new23[i,]))
