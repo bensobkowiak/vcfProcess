@@ -10,7 +10,7 @@
 #' @param lowqual Minimum variant quality to consider call (defauly=20)
 #' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
 #' @param hetasN Code hSNPs as 'N' (TRUE) or by FASTA nucleic acid code (FALSE)
-#' @param misPercent Percentage of sites missing across samples to remove variant (default=80)
+#' @param misPercent Percentage of sites missing across samples to remove variant (default=90)
 #' @param repeatfile .csv file with start and stop coordinates for regions to remove variants
 #' @param disINDEL Remove SNPs within int distance of INDELs 
 #' @param excludeMix If true, will remove samples with a high likelihood of mixed infection (requires MixInfect_vcfProcess.R)
@@ -19,7 +19,7 @@
 
 vcfProcess = function(inputfile,outputfile="output",
                       indelfile=NULL,no.Cores=1,samples2remove=NULL,samples2include=NULL,
-                      indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.9,hetasN=TRUE,misPercent=80,
+                      indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.8,hetasN=TRUE,misPercent=90,
                       repeatfile=NULL,disINDEL=NULL,excludeMix=FALSE){
   
   if (!require(stringr)){
@@ -33,6 +33,10 @@ vcfProcess = function(inputfile,outputfile="output",
   options(stringsAsFactors = F)
   
   vcf<-read.table(inputfile)
+  if (!is.null(indelfile)){
+    indelvcf<-read.table(indelfile)
+    vcf<-rbind(vcf,indelvcf)
+  }
   header_input<-as.matrix(read.table(inputfile,comment.char=" ",sep="\n"))
   end_head<-which(grepl("#CHROM",header_input)==TRUE)
   header<-as.data.frame(header_input[1:end_head-1])
@@ -43,7 +47,7 @@ vcfProcess = function(inputfile,outputfile="output",
   
   ###### Remove or only include named samples
   if (!is.null(samples2remove)){
-    if (grep(".txt",samples2remove)){
+    if (any(samples2remove==".txt")){
       remove<-read.table(samples2remove)[,1]
     } else {remove<-samples2remove
     }
@@ -51,7 +55,7 @@ vcfProcess = function(inputfile,outputfile="output",
     names<-names[-which(is.element(names,remove))]
   }
   if (!is.null(samples2include)){
-    if (grep(".txt",samples2include)){
+    if (any(samples2include==".txt")){
       include<-read.table(samples2include)[,1]
     } else {include<-samples2include
     }
@@ -89,33 +93,22 @@ vcfProcess = function(inputfile,outputfile="output",
   }
   
   ######## Process INDELs
-  if (!is.null(indelfile)){
-    indels<-read.table(indelfile)
-    indelPos<-indels[,2]
-    colnames(indels)<-c(head_start,names)
-    if (indelProcess){
-      if (nrow(indels)!=0){
-        indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
-      } else {print("No indels")
-      }
-    }
-  } else {
-    ind<- lapply(1:nrow(vcf), function(i){
-      length(unlist(strsplit(vcf[i,4],"")))>1 || length(unlist(strsplit(unlist(strsplit(vcf[i,5],","))[1],"")))>1
-    }
-    )
-    indels<-vcf[which(ind==TRUE),]
-    indelPos<-indels[,2]
-    colnames(indels)<-c(head_start,names)
-    vcf<-vcf[which(ind==FALSE),]
-    write.csv(indels,file=paste0(outputfile,"_InDels.csv"),row.names = F)
-    if (indelProcess){
-      if (nrow(indels)!=0){
-        indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
-      } else {print("No indels")
-      }
+  ind<- lapply(1:nrow(vcf), function(i){
+    length(unlist(strsplit(vcf[i,4],"")))>1 || length(unlist(strsplit(unlist(strsplit(vcf[i,5],","))[1],"")))>1
+  }
+  )
+  indels<-vcf[which(ind==TRUE),]
+  indelPos<-indels[,2]
+  colnames(indels)<-c(head_start,names)
+  vcf<-vcf[which(ind==FALSE),]
+  write.csv(indels,file=paste0(outputfile,"_InDels.csv"),row.names = F)
+  if (indelProcess){
+    if (nrow(indels)!=0){
+      indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
+    } else {print("No indels")
     }
   }
+  
   #### Assign alleles
   genotype<-data.frame(vcf[,4:5])
   AD_comp<-data.frame(vcf[,4:5])
@@ -129,7 +122,6 @@ vcfProcess = function(inputfile,outputfile="output",
     read<-cbind(read,split_fieldsDP)
   }
   mixed_sites<-matrix(c("R","GA","AG","M","CA","AC","W","TA","AT","Y","TC","CT","S","GC","CG","K","TG","GT"),ncol=3,byrow = T)
-  alt_allele<-strsplit(genotype[,2],split = ",")
   max_length <- max(unlist(lapply(strsplit(genotype[,2],split = ","), length)))
   
   if (no.Cores>1){
@@ -211,10 +203,9 @@ vcfProcess = function(inputfile,outputfile="output",
   
   ######## Mark low read positions as N
   read<-as.matrix(read[,3:ncol(read)])
-  class(read)<-"numeric"
+  suppressWarnings(class(read)<-"numeric")
   snprd<-read<DP_low
-  lowread<-which(snprd | is.na(snprd)) 
-  output[lowread]<-'N'
+  output[which(snprd | is.na(snprd))]<-'N'
   
   ##### Remove invariant sites 
   new21<-as.matrix(cbind(vcf[,4],output))
@@ -257,7 +248,7 @@ vcfProcess = function(inputfile,outputfile="output",
   }
   
   ####### Remove SNPs within int of INDEL
-  if (!is.null(disINDEL) & length(indelPos)>0){
+  if (!is.null(disINDEL) & length(indelPos)>0 & indelProcess==TRUE){
     res1=vector()
     for (i in 1:length(indelPos)){
       re<-(indelPos[i]-disINDEL):(indelPos[i]+disINDEL)
@@ -341,3 +332,4 @@ vcfProcess = function(inputfile,outputfile="output",
   forfasta<-as.list(apply(output_fast, 1, paste, collapse=""))
   write.fasta(forfasta,names,nbchar=60,file.out=paste0(outputfile,".fasta"),open="w")
 }
+
