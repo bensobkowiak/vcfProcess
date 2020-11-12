@@ -35,6 +35,9 @@ vcfProcess = function(inputfile,outputfile="output",
   vcf<-read.table(inputfile)
   if (!is.null(indelfile)){
     indelvcf<-read.table(indelfile)
+    indel_header_input<-as.matrix(read.table(indelfile,comment.char=" ",sep="\n"))
+    end_head_indel<-which(grepl("#CHROM",indel_header_input)==TRUE)
+    indel_header<-as.data.frame(indel_header_input[1:end_head_indel-1])
     vcf<-rbind(vcf,indelvcf)
   }
   header_input<-as.matrix(read.table(inputfile,comment.char=" ",sep="\n"))
