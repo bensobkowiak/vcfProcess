@@ -202,7 +202,7 @@ vcfProcess = function(inputfile,outputfile="output",
       }
     }
   }
-  output<-output[,3:ncol(output)] 
+  output<-as.matrix(output[,3:ncol(output)])
   
   ######## Mark low read positions as N
   read<-as.matrix(read[,3:ncol(read)])
@@ -222,13 +222,13 @@ vcfProcess = function(inputfile,outputfile="output",
       }
     }
   }
-  new23<-new22[,2:ncol(new22)]
+  new23<-as.matrix(new22[,2:ncol(new22)])
   rd<- lapply(1:nrow(new23), function(i){
     all(as.logical(new23[i,]))
   }
   )
   called<-do.call(rbind,rd)
-  output<-output[which(called=='FALSE'),] 
+  output<-as.matrix(output[which(called=='FALSE'),])
   vcf<-vcf[which(called=='FALSE'),]
   
   ####### Remove SNPs in repeat/specified regions
@@ -242,7 +242,7 @@ vcfProcess = function(inputfile,outputfile="output",
     res<-is.element(as.numeric(vcf[,2]),res1)
     rep<-cbind(vcf[which(res == 'TRUE'),2],vcf[which(res == 'TRUE'),4],output[which(res=='TRUE'),])
     colnames(rep)<-c("Position","Reference",names)
-    output<-output[which(res == 'FALSE'),]
+    output<-as.matrix(output[which(res == 'FALSE'),])
     vcf<-vcf[which(res == 'FALSE'),]
     if (nrow(rep)!=0){
       write.csv(rep, file=paste0(outputfile,"_SNPsinRepRegions.csv"),row.names = F)
@@ -260,7 +260,7 @@ vcfProcess = function(inputfile,outputfile="output",
     res<-is.element(as.numeric(vcf[,2]),res1)
     inds<-cbind(vcf[which(res == 'TRUE'),2],vcf[which(res == 'TRUE'),4],output[which(res=='TRUE'),])
     colnames(inds)<-c("Position","Reference",names)
-    output<-output[which(res == 'FALSE'),]
+    output<-as.matrix(output[which(res == 'FALSE'),])
     vcf<-vcf[which(res == 'FALSE'),]
     if (nrow(inds)!=0){
       write.csv(inds, file=paste0(outputfile,"_SNPswithin",disINDEL,"bpINDELs.csv"),row.names = F)
@@ -273,7 +273,7 @@ vcfProcess = function(inputfile,outputfile="output",
     result<-MixInfect(vcf,names,output,hetProp,outputfile,format)
     vcf<-result$vcf
     names<-result$names
-    output<-result$output
+    output<-as.matrix(result$output)
   }
   
   ##### Remove SNPs > misPercent missing data
@@ -281,7 +281,7 @@ vcfProcess = function(inputfile,outputfile="output",
   for (i in 1:nrow(output)){
     percent_missing[i]<-((length(which(output[i,]=="?"))+length(which(output[i,]=="N")))/ncol(output))*100
   }
-  output<-output[which(percent_missing<=misPercent),]
+  output<-as.matrix(output[which(percent_missing<=misPercent),])
   vcf<-vcf[which(percent_missing<=misPercent),]
   
   ########## Write VCF file of processed SNPs
@@ -308,25 +308,27 @@ vcfProcess = function(inputfile,outputfile="output",
   write.fasta(forfastaref,namesfasta,nbchar=60,file.out=paste0(outputfile,"_with_ref.fasta"),open="w")
   
   ########### FASTA file of samples only
-  mat<-cbind(as.character(vcf[,4]),output)
-  new22<-matrix(0,nrow(mat),ncol(mat))
-  for (i in 1:nrow(mat)){
-    for (j in 2:ncol(mat)){
-      if (mat[i,j]==mat[i,1] | mat[i,j]=="N"){
-        new22[i,j]='FALSE'}
-      else  {
-        new22[i,j]='TRUE'
+  if (ncol(output)>1){
+    mat<-cbind(as.character(vcf[,4]),output)
+    new22<-matrix(0,nrow(mat),ncol(mat))
+    for (i in 1:nrow(mat)){
+      for (j in 2:ncol(mat)){
+        if (mat[i,j]==mat[i,1] | mat[i,j]=="N"){
+          new22[i,j]='FALSE'}
+        else  {
+          new22[i,j]='TRUE'
+        }
       }
     }
+    new22<-as.matrix(new22[,2:ncol(new22)])
+    df<- lapply(1:nrow(new22), function(i){
+      all(as.logical(new22[i,]))
+    }
+    )
+    out<-do.call(rbind,df)
+    output<-as.matrix(output[which(out=='FALSE'),])
+    vcf<-vcf[which(out=='FALSE'),]
   }
-  new22<-new22[,2:ncol(new22)]
-  df<- lapply(1:nrow(new22), function(i){
-    all(as.logical(new22[i,]))
-  }
-  )
-  out<-do.call(rbind,df)
-  output<-output[which(out=='FALSE'),] 
-  vcf<-vcf[which(out=='FALSE'),]
   Reference<-as.character(vcf[,4])
   Position<-vcf[,2]
   forcsv<-cbind(Position,Reference,output)
@@ -335,4 +337,5 @@ vcfProcess = function(inputfile,outputfile="output",
   forfasta<-as.list(apply(output_fast, 1, paste, collapse=""))
   write.fasta(forfasta,names,nbchar=60,file.out=paste0(outputfile,".fasta"),open="w")
 }
+                           
 
