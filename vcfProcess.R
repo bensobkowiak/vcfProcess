@@ -13,14 +13,14 @@
 #' @param misPercent Percentage of sites missing across samples to remove variant (default=90)
 #' @param repeatfile .csv file with start and stop coordinates for regions to remove variants
 #' @param disINDEL Remove SNPs within int distance of INDELs 
-#' @param excludeMix If true, will remove samples with a high likelihood of mixed infection (requires MixInfect_vcfProcess.R)
+#' @param MixInfect If TRUE, run MixInfect to test for mixed infections, if excludeMix = TRUE, will remove samples with a high likelihood of mixed infection (requires MixInfect_vcfProcess.R)
 #' @return filtered .vcf and .csv variant files, optional INDEL and mixed infection files
 #' @export
 
 vcfProcess = function(inputfile,outputfile="output",
-                      indelfile=NULL,no.Cores=1,samples2remove=NULL,samples2include=NULL,
-                      indelProcess=FALSE,DP_low=5,lowqual=20,hetProp=0.8,hetasN=TRUE,misPercent=90,
-                      repeatfile=NULL,disINDEL=NULL,excludeMix=FALSE){
+                      indelfile=NULL,no.Cores=1,samples2remove=NULL,samples2include=NULL,filter=TRUE,
+                      processIndel=FALSE,DP_low=5,lowqual=20,hetProp=0.8,hetasN=TRUE,misPercent=90,
+                      repeatfile=NULL,disINDEL=NULL,MixInfect=TRUE,excludeMix=FALSE){
   
   if (!require(stringr)){
     install.packages("stringr",repos = "http://cran.us.r-project.org")
@@ -50,18 +50,12 @@ vcfProcess = function(inputfile,outputfile="output",
   
   ###### Remove or only include named samples
   if (!is.null(samples2remove)){
-    if (any(samples2remove==".txt")){
-      remove<-read.table(samples2remove)[,1]
-    } else {remove<-samples2remove
-    }
+    remove<-read.table(samples2remove,check.names = F)[,1]
     vcf<-vcf[,-(which(is.element(names,remove))+9)]
     names<-names[-which(is.element(names,remove))]
   }
   if (!is.null(samples2include)){
-    if (any(samples2include==".txt")){
-      include<-read.table(samples2include)[,1]
-    } else {include<-samples2include
-    }
+    include<-read.table(samples2include,check.names = F)[,1]
     vcf<-cbind(vcf[,1:9],vcf[,(which(is.element(names,include))+9)])
     names<-names[which(is.element(names,include))]
   }
@@ -76,6 +70,17 @@ vcfProcess = function(inputfile,outputfile="output",
     AD<-which(st=='DP')
     hetProp<-1
   } # if no AD field, hetProp set to 1
+  
+  ###### Remove variants if failed filter
+  if (filter){
+    filterCol<-which(head_start=="FILTER")
+    failedQC_mat<-vcf[which(vcf[,filterCol] != "PASS"),]
+    colnames(failedQC_mat)<-c(head_start,names)
+    vcf<-vcf[which(vcf[,filterCol] == "PASS"),]
+    if (nrow(failedQC_mat)!=0){
+      write.csv(failedQC_mat,file=paste0(outputfile,"_filteredVariants.csv"),row.names = F)
+    } else {print("No filtered variants")}
+  }
   
   ####### Remove low quality variants
   lowqual_mat<-vcf[which((as.integer(vcf[,6]) < lowqual) ==T),]
@@ -105,9 +110,12 @@ vcfProcess = function(inputfile,outputfile="output",
   colnames(indels)<-c(head_start,names)
   vcf<-vcf[which(ind==FALSE),]
   write.csv(indels,file=paste0(outputfile,"_InDels.csv"),row.names = F)
-  if (indelProcess){
+  if (processIndel){
     if (nrow(indels)!=0){
-      indelfile<-indelProcess(indels,names,GT,AD,DP,hetProp,DP_low,outputfile,repeatfile.present,repeatfile)
+      if (is.null(indelfile)){
+        indel_header<-header
+      }
+      indelfile<-indelProcess(indels,indel_header,names,hetProp,DP_low,outputfile,repeatfile,misPercent)
     } else {print("No indels")
     }
   }
@@ -140,14 +148,16 @@ vcfProcess = function(inputfile,outputfile="output",
     output<-foreach(i=1:nrow(genotype)) %dopar% {
       df<-data.frame(matrix("N",ncol=ncol(genotype)))
       df[1,as.numeric(which(unlist(genotype[i,])=="./."))]<-"N" # Missing
+      df[1,as.numeric(which(unlist(genotype[i,])==".|."))]<-"N" # Missing
       df[1,as.numeric(which(unlist(genotype[i,])=="0/0"))]<-genotype[i,1] # Ref call
+      df[1,as.numeric(which(unlist(genotype[i,])=="0|0"))]<-genotype[i,1] # Ref call
       for (j in 1:max_length){
-        df[1,as.numeric(which(unlist(genotype[i,])==paste0(j,"/",j)))]<-unlist(strsplit(genotype[i,2],","))[j]
+        df[1,as.numeric(which(unlist(genotype[i,])==paste0(j,"/",j) | unlist(genotype[i,])==paste0(j,"|",j)))]<-unlist(strsplit(genotype[i,2],","))[j]
       } # Alt call
       alleles<-c(genotype[i,1],unlist(strsplit(genotype[i,2],",")))
       for (j in 0:(max_length-1)){
         for (k in (j+1):max_length){
-          mixed<-which(genotype[i,]==paste0(j,"/",k))
+          mixed<-which(genotype[i,]==paste0(j,"/",k) | genotype[i,]==paste0(j,"|",k))
           if (length(mixed)>0){
             for (mix in 1:length(mixed)){
               if (hetProp<1){
@@ -176,14 +186,16 @@ vcfProcess = function(inputfile,outputfile="output",
     colnames(output)=colnames(genotype)
     for (i in 1:nrow(genotype)){
       output[i,as.numeric(which(unlist(genotype[i,])=="./."))]<-"N" # Missing
+      output[i,as.numeric(which(unlist(genotype[i,])==".|."))]<-"N" # Missing
       output[i,as.numeric(which(unlist(genotype[i,])=="0/0"))]<-genotype[i,1] # Ref call
+      output[i,as.numeric(which(unlist(genotype[i,])=="0|0"))]<-genotype[i,1] # Ref call
       for (j in 1:max_length){
-        output[i,as.numeric(which(unlist(genotype[i,])==paste0(j,"/",j)))]<-unlist(strsplit(genotype[i,2],","))[j]
+        output[i,as.numeric(which(unlist(genotype[i,])==paste0(j,"/",j) | unlist(genotype[i,])==paste0(j,"|",j)))]<-unlist(strsplit(genotype[i,2],","))[j]
       } # Alt call
       alleles<-c(genotype[i,1],unlist(strsplit(genotype[i,2],",")))
       for (j in 0:(max_length-1)){
         for (k in (j+1):max_length){
-          mixed<-which(genotype[i,]==paste0(j,"/",k))
+          mixed<-which(genotype[i,]==paste0(j,"/",k) | genotype[i,]==paste0(j,"|",k))
           if (length(mixed)>0){
             for (mix in 1:length(mixed)){
               if (hetProp<1){
@@ -202,7 +214,7 @@ vcfProcess = function(inputfile,outputfile="output",
       }
     }
   }
-  output<-as.matrix(output[,3:ncol(output)])
+  output<-output[,3:ncol(output)] 
   
   ######## Mark low read positions as N
   read<-as.matrix(read[,3:ncol(read)])
@@ -222,13 +234,13 @@ vcfProcess = function(inputfile,outputfile="output",
       }
     }
   }
-  new23<-as.matrix(new22[,2:ncol(new22)])
+  new23<-new22[,2:ncol(new22)]
   rd<- lapply(1:nrow(new23), function(i){
     all(as.logical(new23[i,]))
   }
   )
   called<-do.call(rbind,rd)
-  output<-as.matrix(output[which(called=='FALSE'),])
+  output<-output[which(called=='FALSE'),] 
   vcf<-vcf[which(called=='FALSE'),]
   
   ####### Remove SNPs in repeat/specified regions
@@ -242,7 +254,7 @@ vcfProcess = function(inputfile,outputfile="output",
     res<-is.element(as.numeric(vcf[,2]),res1)
     rep<-cbind(vcf[which(res == 'TRUE'),2],vcf[which(res == 'TRUE'),4],output[which(res=='TRUE'),])
     colnames(rep)<-c("Position","Reference",names)
-    output<-as.matrix(output[which(res == 'FALSE'),])
+    output<-output[which(res == 'FALSE'),]
     vcf<-vcf[which(res == 'FALSE'),]
     if (nrow(rep)!=0){
       write.csv(rep, file=paste0(outputfile,"_SNPsinRepRegions.csv"),row.names = F)
@@ -260,7 +272,7 @@ vcfProcess = function(inputfile,outputfile="output",
     res<-is.element(as.numeric(vcf[,2]),res1)
     inds<-cbind(vcf[which(res == 'TRUE'),2],vcf[which(res == 'TRUE'),4],output[which(res=='TRUE'),])
     colnames(inds)<-c("Position","Reference",names)
-    output<-as.matrix(output[which(res == 'FALSE'),])
+    output<-output[which(res == 'FALSE'),]
     vcf<-vcf[which(res == 'FALSE'),]
     if (nrow(inds)!=0){
       write.csv(inds, file=paste0(outputfile,"_SNPswithin",disINDEL,"bpINDELs.csv"),row.names = F)
@@ -269,11 +281,11 @@ vcfProcess = function(inputfile,outputfile="output",
   }
   
   #### Test for mixed infection, remove mixed samples and reassign mixed calls 
-  if (excludeMix){
-    result<-MixInfect(vcf,names,output,hetProp,outputfile,format)
+  if (MixInfect){
+    result<-MixInfect(vcf,names,output,hetProp,outputfile,format,excludeMix)
     vcf<-result$vcf
     names<-result$names
-    output<-as.matrix(result$output)
+    output<-result$output
   }
   
   ##### Remove SNPs > misPercent missing data
@@ -281,7 +293,7 @@ vcfProcess = function(inputfile,outputfile="output",
   for (i in 1:nrow(output)){
     percent_missing[i]<-((length(which(output[i,]=="?"))+length(which(output[i,]=="N")))/ncol(output))*100
   }
-  output<-as.matrix(output[which(percent_missing<=misPercent),])
+  output<-output[which(percent_missing<=misPercent),]
   vcf<-vcf[which(percent_missing<=misPercent),]
   
   ########## Write VCF file of processed SNPs
@@ -291,51 +303,47 @@ vcfProcess = function(inputfile,outputfile="output",
   names(headrow)<-names(header)
   names(vfile)<-names(header)
   outvcf<-rbind(header,headrow,vfile)
-  write.table(outvcf, file= paste0(outputfile,"_processed.vcf"),row.names =FALSE,sep="\t",quote=FALSE,col.names=FALSE)
+  write.table(outvcf, file= paste0(outputfile,"_SNPs_processed.vcf"),row.names =FALSE,sep="\t",quote=FALSE,col.names=FALSE)
   
   ########### CSV file with SNP genotypes only with reference sequence and SNP position 
   colnames(output)<-names
   Reference<-as.character(vcf[,4])
   Position<-vcf[,2]
   forcsv<-cbind(Position,Reference,output)
-  write.csv(forcsv,file=paste0(outputfile,"_with_ref.csv"),row.names=FALSE)
+  write.csv(forcsv,file=paste0(outputfile,"_SNPs_with_ref.csv"),row.names=FALSE)
   
   ########### Fasta file of all isolates with reference
   namesfasta<-c("Reference",names)
   output_fast<-t(output)
   forfastaref<-rbind(Reference,output_fast)
   forfastaref<-as.list(apply(forfastaref, 1, paste, collapse=""))
-  write.fasta(forfastaref,namesfasta,nbchar=60,file.out=paste0(outputfile,"_with_ref.fasta"),open="w")
+  write.fasta(forfastaref,namesfasta,nbchar=60,file.out=paste0(outputfile,"SNPs_with_ref.fasta"),open="w")
   
   ########### FASTA file of samples only
-  if (ncol(output)>1){
-    mat<-cbind(as.character(vcf[,4]),output)
-    new22<-matrix(0,nrow(mat),ncol(mat))
-    for (i in 1:nrow(mat)){
-      for (j in 2:ncol(mat)){
-        if (mat[i,j]==mat[i,1] | mat[i,j]=="N"){
-          new22[i,j]='FALSE'}
-        else  {
-          new22[i,j]='TRUE'
-        }
+  mat<-cbind(as.character(vcf[,4]),output)
+  new22<-matrix(0,nrow(mat),ncol(mat))
+  for (i in 1:nrow(mat)){
+    for (j in 2:ncol(mat)){
+      if (mat[i,j]==mat[i,1] | mat[i,j]=="N"){
+        new22[i,j]='FALSE'}
+      else  {
+        new22[i,j]='TRUE'
       }
     }
-    new22<-as.matrix(new22[,2:ncol(new22)])
-    df<- lapply(1:nrow(new22), function(i){
-      all(as.logical(new22[i,]))
-    }
-    )
-    out<-do.call(rbind,df)
-    output<-as.matrix(output[which(out=='FALSE'),])
-    vcf<-vcf[which(out=='FALSE'),]
   }
+  new22<-new22[,2:ncol(new22)]
+  df<- lapply(1:nrow(new22), function(i){
+    all(as.logical(new22[i,]))
+  }
+  )
+  out<-do.call(rbind,df)
+  output<-output[which(out=='FALSE'),] 
+  vcf<-vcf[which(out=='FALSE'),]
   Reference<-as.character(vcf[,4])
   Position<-vcf[,2]
   forcsv<-cbind(Position,Reference,output)
-  write.csv(forcsv,file=paste0(outputfile,".csv"),row.names=FALSE)
+  write.csv(forcsv,file=paste0(outputfile,"_SNPs.csv"),row.names=FALSE)
   output_fast<-t(output)
   forfasta<-as.list(apply(output_fast, 1, paste, collapse=""))
-  write.fasta(forfasta,names,nbchar=60,file.out=paste0(outputfile,".fasta"),open="w")
-}
-                           
-
+  write.fasta(forfasta,names,nbchar=60,file.out=paste0(outputfile,"_SNPs.fasta"),open="w")
+}                 
