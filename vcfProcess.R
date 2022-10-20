@@ -5,7 +5,7 @@
 #' @param no.Cores Number of CPU cores to use - if >1, script will run some parallelization 
 #' @param samples2remove Samples to remove from multisample inputs, can be string or .txt file in single column (default=NULL)
 #' @param samples2include Samples to include from multisample inputs, can be string or .txt file in single column (default=NULL (keep all samples))
-#' @param indelProcess Process INDEL variants (requires indelProcess_vcfProcess.R)
+#' @param processIndel Process INDEL variants (requires indelProcess_vcfProcess.R)
 #' @param DP_low Minimum read depth to consider call (default=5)
 #' @param lowqual Minimum variant quality to consider call (defauly=20)
 #' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
@@ -109,13 +109,13 @@ vcfProcess = function(inputfile,outputfile="output",
   indelPos<-indels[,2]
   colnames(indels)<-c(head_start,names)
   vcf<-vcf[which(ind==FALSE),]
-  write.csv(indels,file=paste0(outputfile,"_InDels.csv"),row.names = F)
+  write.csv(indels,file=paste0(outputfile,"_InDels_prefiltered.csv"),row.names = F)
   if (processIndel){
     if (nrow(indels)!=0){
       if (is.null(indelfile)){
         indel_header<-header
       }
-      indelfile<-indelProcess(indels,indel_header,names,hetProp,DP_low,outputfile,repeatfile,misPercent)
+      indelfile<-indelProcess(indels,indel_header,names,format,hetProp,DP_low,outputfile,repeatfile,misPercent)
     } else {print("No indels")
     }
   }
@@ -263,7 +263,7 @@ vcfProcess = function(inputfile,outputfile="output",
   }
   
   ####### Remove SNPs within int of INDEL
-  if (!is.null(disINDEL) & length(indelPos)>0 & indelProcess==TRUE){
+  if (!is.null(disINDEL) & length(indelPos)>0 & processIndel==TRUE){
     res1=vector()
     for (i in 1:length(indelPos)){
       re<-(indelPos[i]-disINDEL):(indelPos[i]+disINDEL)
@@ -317,7 +317,7 @@ vcfProcess = function(inputfile,outputfile="output",
   output_fast<-t(output)
   forfastaref<-rbind(Reference,output_fast)
   forfastaref<-as.list(apply(forfastaref, 1, paste, collapse=""))
-  write.fasta(forfastaref,namesfasta,nbchar=60,file.out=paste0(outputfile,"SNPs_with_ref.fasta"),open="w")
+  write.fasta(forfastaref,namesfasta,nbchar=60,file.out=paste0(outputfile,"_SNPs_with_ref.fasta"),open="w")
   
   ########### FASTA file of samples only
   mat<-cbind(as.character(vcf[,4]),output)
@@ -346,4 +346,4 @@ vcfProcess = function(inputfile,outputfile="output",
   output_fast<-t(output)
   forfasta<-as.list(apply(output_fast, 1, paste, collapse=""))
   write.fasta(forfasta,names,nbchar=60,file.out=paste0(outputfile,"_SNPs.fasta"),open="w")
-}                 
+}
