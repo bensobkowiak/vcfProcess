@@ -7,7 +7,7 @@
 #' @return vcf, names and output genotype files with mixed infections removed
 #' @export
 
-indelProcess = function(indels,indel_header,names,hetProp,DP_low,outputfile,repeatfile,misPercent){
+indelProcess = function(indels,indel_header,names,format,hetProp,DP_low,outputfile,repeatfile,misPercent){
   
   if (!require(stringr)){
     install.packages("stringr",repos = "http://cran.us.r-project.org")
@@ -21,6 +21,7 @@ indelProcess = function(indels,indel_header,names,hetProp,DP_low,outputfile,repe
   indelvcf<-indels
   indel_header<-indel_header
   names_indel<-names
+  format<-format
   indel_alleles<-data.frame(indelvcf[,4:5])
   st<-unlist(str_split(indelvcf[1,format], ":"))
   GT<-which(st=='GT')
@@ -141,3 +142,4 @@ indelProcess = function(indels,indel_header,names,hetProp,DP_low,outputfile,repe
   indel_fasta<-read.fasta(paste0(outputfile,"_indels.fasta"))
   write.nexus.data(indel_fasta,paste0(outputfile,"_indels.nexus"),format = "standard")
 }
+
