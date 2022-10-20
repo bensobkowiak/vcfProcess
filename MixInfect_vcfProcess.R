@@ -195,3 +195,4 @@ MixInfect = function(vcf,names,output,hetProp,outputfile,format,excludeMix,LowCo
   }
   return(list(vcf=vcf,names=names,output=output))
 }
+
