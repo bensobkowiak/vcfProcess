@@ -31,6 +31,8 @@ vcfProcess = function(inputfile,outputfile="output",
     library(seqinr)
   }
   options(stringsAsFactors = F)
+  source("MixInfect_vcfProcess.R")
+  source("indelProcess_vcfProcess.R")
   
   vcf<-read.table(inputfile)
   if (!is.null(indelfile)){
