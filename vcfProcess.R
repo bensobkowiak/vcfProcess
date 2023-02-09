@@ -19,7 +19,7 @@
 
 vcfProcess = function(inputfile,outputfile="output",
                       indelfile=NULL,no.Cores=1,samples2remove=NULL,samples2include=NULL,filter=TRUE,
-                      processIndel=FALSE,DP_low=5,lowqual=20,hetProp=0.8,hetasN=TRUE,misPercent=90,
+                      processIndel=FALSE,DP_low=5,lowqual=20,hetProp=0.9,hetasN=TRUE,misPercent=90,
                       repeatfile=NULL,disINDEL=NULL,MixInfect=TRUE,excludeMix=FALSE){
   
   if (!require(stringr)){
