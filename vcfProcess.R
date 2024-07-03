@@ -17,22 +17,17 @@
 #' @return filtered .vcf and .csv variant files, optional INDEL and mixed infection files
 #' @export
 
-if (!require(stringr)){
-  install.packages("stringr",repos = "http://cran.us.r-project.org")
-  library(stringr)
-}
-if (!require(seqinr)){
-  install.packages("seqinr",repos = "http://cran.us.r-project.org")
-  library(seqinr)
-}
-if (!require(foreach)){
-  install.packages("foreach",repos = "http://cran.us.r-project.org")
-  library(foreach)
-}
-if (!require(doMC)){
-  install.packages("doMC",repos = "http://cran.us.r-project.org")
-  library(doMC)
-}
+if (!require("stringr")){install.packages("stringr")}
+if (!require("seqinr")){install.packages("seqinr")}
+if (!require("optparse")){install.packages("optparse")}
+if (!require("foreach")){install.packages("foreach")}
+if (!require("doMC")){install.packages("doMC")}
+
+library(seqinr)
+library(stringr)
+library(optparse)
+library(foreach)
+library(doMC)
 
 options(stringsAsFactors = F)
 
