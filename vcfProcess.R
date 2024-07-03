@@ -17,22 +17,33 @@
 #' @return filtered .vcf and .csv variant files, optional INDEL and mixed infection files
 #' @export
 
+if (!require(stringr)){
+  install.packages("stringr",repos = "http://cran.us.r-project.org")
+  library(stringr)
+}
+if (!require(seqinr)){
+  install.packages("seqinr",repos = "http://cran.us.r-project.org")
+  library(seqinr)
+}
+if (!require(foreach)){
+  install.packages("foreach",repos = "http://cran.us.r-project.org")
+  library(foreach)
+}
+if (!require(doMC)){
+  install.packages("doMC",repos = "http://cran.us.r-project.org")
+  library(doMC)
+}
+
+options(stringsAsFactors = F)
+
 vcfProcess = function(inputfile,outputfile="output",
                       indelfile=NULL,no.Cores=1,samples2remove=NULL,samples2include=NULL,filter=TRUE,
                       processIndel=FALSE,DP_low=5,lowqual=20,hetProp=0.9,hetasN=TRUE,misPercent=90,
                       repeatfile=NULL,disINDEL=NULL,MixInfect=TRUE,excludeMix=FALSE){
   
-  if (!require(stringr)){
-    install.packages("stringr",repos = "http://cran.us.r-project.org")
-    library(stringr)
-  }
-  if (!require(seqinr)){
-    install.packages("seqinr",repos = "http://cran.us.r-project.org")
-    library(seqinr)
-  }
-  options(stringsAsFactors = F)
-  source("MixInfect_vcfProcess.R")
-  source("indelProcess_vcfProcess.R")
+
+  source("~/Documents/Scripts/MixInfect_vcfProcess.R")
+  source("~/Documents/Scripts/indelProcess_vcfProcess.R")
   
   vcf<-read.table(inputfile)
   if (!is.null(indelfile)){
@@ -138,14 +149,6 @@ vcfProcess = function(inputfile,outputfile="output",
   max_length <- max(unlist(lapply(strsplit(genotype[,2],split = ","), length)))
   
   if (no.Cores>1){
-    if (!require(foreach)){
-      install.packages("foreach",repos = "http://cran.us.r-project.org")
-      library(foreach)
-    }
-    if (!require(doMC)){
-      install.packages("doMC",repos = "http://cran.us.r-project.org")
-      library(doMC)
-    }
     registerDoMC(no.Cores)
     output<-foreach(i=1:nrow(genotype)) %dopar% {
       df<-data.frame(matrix("N",ncol=ncol(genotype)))
@@ -222,28 +225,22 @@ vcfProcess = function(inputfile,outputfile="output",
   read<-as.matrix(read[,3:ncol(read)])
   suppressWarnings(class(read)<-"numeric")
   snprd<-read<DP_low
-  output[which(snprd | is.na(snprd))]<-'N'
+  output[which(snprd | is.na(snprd))]<-'?'
   
   ##### Remove invariant sites 
   new21<-as.matrix(cbind(vcf[,4],output))
-  new22<-matrix(0,nrow(new21),ncol(new21))
-  for (i in 1:nrow(new21)){
-    for (j in 2:ncol(new21)){
-      if (new21[i,j]==new21[i,1]){
-        new22[i,j]='TRUE'}
-      else  {
-        new22[i,j]='FALSE'
-      }
-    }
+  if (ncol(new21)>2){
+  rows_to_keep <- which(rowSums(new21[, -1] != new21[, 1] & 
+                                  new21[, -1] != "?", na.rm = TRUE) > 0)
+  output<-output[rows_to_keep,] 
+  vcf<-vcf[rows_to_keep,]
+  } else {
+    rows_to_keep <- which(new21[,2]!= new21[, 1] & 
+                            new21[, 2] != "?")
+    output<-as.data.frame(output[rows_to_keep])
+    vcf<-vcf[rows_to_keep,]
   }
-  new23<-new22[,2:ncol(new22)]
-  rd<- lapply(1:nrow(new23), function(i){
-    all(as.logical(new23[i,]))
-  }
-  )
-  called<-do.call(rbind,rd)
-  output<-output[which(called=='FALSE'),] 
-  vcf<-vcf[which(called=='FALSE'),]
+
   
   ####### Remove SNPs in repeat/specified regions
   if (!is.null(repeatfile)){
@@ -256,7 +253,7 @@ vcfProcess = function(inputfile,outputfile="output",
     res<-is.element(as.numeric(vcf[,2]),res1)
     rep<-cbind(vcf[which(res == 'TRUE'),2],vcf[which(res == 'TRUE'),4],output[which(res=='TRUE'),])
     colnames(rep)<-c("Position","Reference",names)
-    output<-output[which(res == 'FALSE'),]
+    output<-as.data.frame(output[which(res == 'FALSE'),])
     vcf<-vcf[which(res == 'FALSE'),]
     if (nrow(rep)!=0){
       write.csv(rep, file=paste0(outputfile,"_SNPsinRepRegions.csv"),row.names = F)
@@ -295,7 +292,7 @@ vcfProcess = function(inputfile,outputfile="output",
   for (i in 1:nrow(output)){
     percent_missing[i]<-((length(which(output[i,]=="?"))+length(which(output[i,]=="N")))/ncol(output))*100
   }
-  output<-output[which(percent_missing<=misPercent),]
+  output<-as.data.frame(output[which(percent_missing<=misPercent),])
   vcf<-vcf[which(percent_missing<=misPercent),]
   
   ########## Write VCF file of processed SNPs
@@ -322,30 +319,63 @@ vcfProcess = function(inputfile,outputfile="output",
   write.fasta(forfastaref,namesfasta,nbchar=60,file.out=paste0(outputfile,"_SNPs_with_ref.fasta"),open="w")
   
   ########### FASTA file of samples only
-  mat<-cbind(as.character(vcf[,4]),output)
-  new22<-matrix(0,nrow(mat),ncol(mat))
-  for (i in 1:nrow(mat)){
-    for (j in 2:ncol(mat)){
-      if (mat[i,j]==mat[i,1] | mat[i,j]=="N"){
-        new22[i,j]='FALSE'}
-      else  {
-        new22[i,j]='TRUE'
-      }
-    }
+  new21<-as.matrix(cbind(vcf[,4],output))
+  if (ncol(new21)>2){
+    rows_to_keep <- which(rowSums(new21[, -1] != new21[, 1] & 
+                                    new21[, -1] != "?", na.rm = TRUE) > 0)
+    output<-output[rows_to_keep,] 
+    vcf<-vcf[rows_to_keep,]
+  } else {
+    rows_to_keep <- which(new21[,2]!= new21[, 1] & 
+                            new21[, 2] != "?")
+    output<-as.data.frame(output[rows_to_keep,])
+    vcf<-vcf[rows_to_keep,]
   }
-  new22<-new22[,2:ncol(new22)]
-  df<- lapply(1:nrow(new22), function(i){
-    all(as.logical(new22[i,]))
-  }
-  )
-  out<-do.call(rbind,df)
-  output<-output[which(out=='FALSE'),] 
-  vcf<-vcf[which(out=='FALSE'),]
+
   Reference<-as.character(vcf[,4])
   Position<-vcf[,2]
   forcsv<-cbind(Position,Reference,output)
+  names(forcsv)<-c("Position",namesfasta)
   write.csv(forcsv,file=paste0(outputfile,"_SNPs.csv"),row.names=FALSE)
   output_fast<-t(output)
   forfasta<-as.list(apply(output_fast, 1, paste, collapse=""))
   write.fasta(forfasta,names,nbchar=60,file.out=paste0(outputfile,"_SNPs.fasta"),open="w")
 }
+
+# Define command-line options
+option_list <- list(
+  make_option(c("-i", "--inputfile"), type="character", default=NULL, help="Input VCF file", metavar="character"),
+  make_option(c("-o", "--outputfile"), type="character", default="output", help="Prefix for output files", metavar="character"),
+  make_option(c("--indelfile"), type="character", default=NULL, help="Name of file containing INDELs file if separate to SNPs", metavar="character"),
+  make_option(c("-c", "--no.Cores"), type="integer", default=1, help="Number of CPU cores to use", metavar="integer"),
+  make_option(c("--samples2remove"), type="character", default=NULL, help="Samples to remove from multisample inputs", metavar="character"),
+  make_option(c("--samples2include"), type="character", default=NULL, help="Samples to include from multisample inputs", metavar="character"),
+  make_option(c("--filter"), type="logical", default=TRUE, help="Use the 'FILTER' column in VCF file to filter SNPs", metavar="logical"),
+  make_option(c("--processIndel"), type="logical", default=FALSE, help="Process INDEL variants", metavar="logical"),
+  make_option(c("--DP_low"), type="integer", default=5, help="Minimum read depth to consider call", metavar="integer"),
+  make_option(c("--lowqual"), type="integer", default=20, help="Minimum variant quality to consider call", metavar="integer"),
+  make_option(c("--hetProp"), type="numeric", default=0.9, help="Proportion allele frequency at hSNPs to assign call", metavar="numeric"),
+  make_option(c("--hetasN"), type="logical", default=TRUE, help="Code hSNPs as 'N' or by FASTA nucleic acid code", metavar="logical"),
+  make_option(c("--misPercent"), type="integer", default=90, help="Percentage of sites missing across samples to remove variant", metavar="integer"),
+  make_option(c("--repeatfile"), type="character", default=NULL, help=".csv file with start and stop coordinates for regions to remove variants", metavar="character"),
+  make_option(c("--disINDEL"), type="integer", default=NULL, help="Remove SNPs within int distance of INDELs", metavar="integer"),
+  make_option(c("--MixInfect"), type="logical", default=TRUE, help="Run MixInfect to test for mixed infections", metavar="logical"),
+  make_option(c("--excludeMix"), type="logical", default=FALSE, help="Remove samples with a high likelihood of mixed infection", metavar="logical")
+)
+
+# Parse command-line options
+opt_parser <- OptionParser(option_list=option_list)
+opt <- parse_args(opt_parser)
+
+# Check if input file is provided
+if (is.null(opt$inputfile)) {
+  print_help(opt_parser)
+  stop("Input file must be provided.", call.=FALSE)
+}
+
+# Run the function with parsed options
+vcfProcess(opt$inputfile, opt$outputfile, opt$indelfile, opt$no.Cores, opt$samples2remove, opt$samples2include, 
+           opt$filter, opt$processIndel, opt$DP_low, opt$lowqual, opt$hetProp, opt$hetasN, opt$misPercent, 
+           opt$repeatfile, opt$disINDEL, opt$MixInfect, opt$excludeMix)
+
+                           
