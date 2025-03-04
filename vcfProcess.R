@@ -102,15 +102,6 @@ vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.
   }
   print("finished allele calling")
   
-  if (processIndel && nrow(indels) != 0) {
-    if (is.null(indelfiles)) {
-      indel_header <- header
-    }
-    indelfile <- indelProcess(indels, indel_header, names_final, format, hetProp, DP_low, outputfile, repeatfile, misPercent)
-  } else {
-    print("No indels")
-  }
-  
   mixed_infection_info <- if (MixInfect2) {
     MixInfect2_vcfProcess(vcf, names_final, output, hetProp, outputfile, format, excludeMix, no.Cores, LowCov)
   } else {
@@ -125,6 +116,15 @@ vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.
   vcf <- missing_data_info$vcf
   print("Before writing")
   write_output_files(output, vcf, outputfile, names_final, head_start, header)
+
+  if (processIndel && nrow(indels) != 0) {
+    if (is.null(indelfiles)) {
+      indel_header <- header
+    }
+    indelfile <- indelProcess(indels, indel_header, names_final, format, hetProp, DP_low, outputfile, repeatfile, misPercent)
+  } else {
+    print("No indels")
+  }
 }
 
 option_list <- list(
