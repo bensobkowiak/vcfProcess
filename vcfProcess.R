@@ -11,7 +11,8 @@
 #' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
 #' @param hetasN Code hSNPs as 'N' (TRUE) or by FASTA nucleic acid code (FALSE)
 #' @param misPercent Percentage of sites missing across samples to remove variant (default=90)
-#' @param repeatfile .csv file with start and stop coordinates for regions to remove variants
+#' @param repeatfile .csv file with start and stop coordinates for regions to mask
+#' @param MixRepeatFile .csv file with start and stop coordinates for regions to mask when running MixInfect (can be NULL if repeatfile specified, otherwise will generate warning)
 #' @param disINDEL Remove SNPs within int distance of INDELs 
 #' @param MixInfect2 If TRUE, run MixInfect2 to test for mixed infections, if excludeMix = TRUE, will remove samples with a high likelihood of mixed infection (requires MixInfect2_vcfProcess.R)
 #' @param LowCov Lowest read depth at mixed sites for MixInfect2 (default = 10)
@@ -33,11 +34,11 @@ library(doMC)
 
 vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.Cores = 1, samples2remove = NULL, samples2include = NULL, filter = TRUE,
                        processIndel = FALSE, DP_low = 5, lowqual = 20, hetProp = 0.9, hetasN = TRUE, misPercent = 90,
-                       repeatfile = NULL, disINDEL = NULL, MixInfect2 = TRUE, LowCov = 10, excludeMix = FALSE) {
+                       repeatfile = NULL, MixRepeatFile = NULL, disINDEL = NULL, MixInfect2 = TRUE, LowCov = 10, excludeMix = FALSE) {
   
-  source("vcfProcess_functions.R")
-  source("MixInfect2_vcfProcess.R")
-  source("indelProcess_vcfProcess.R")
+  source("~/Documents/Scripts/vcfProcess_functions.R")
+  source("~/Documents/Scripts/MixInfect2_vcfProcess.R")
+  source("~/Documents/Scripts/indelProcess_vcfProcess.R")
   
   header_info <- get_vcf_header(inputfiles[1])
   header <- header_info$header
@@ -47,6 +48,14 @@ vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.
   names <- names[10:length(names)]
   names_all<-names
   filterCol <- which(head_start == "FILTER")
+  
+  if (is.null(MixRepeatFile)){
+    if (!is.null(repeatfile)){
+      MixRepeatFile <- repeatfile
+    } else {
+      sprintf("Warning! No masking file specified for MixInfect2, number of mixed infections likely overestimated. Consider re-running with a masking file")
+    }
+  }
   
   for (vf in 1:length(inputfiles)) {
     vcf_n <- read_vcf(inputfiles[vf])
@@ -103,20 +112,21 @@ vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.
   print("finished allele calling")
   
   mixed_infection_info <- if (MixInfect2) {
-    MixInfect2_vcfProcess(vcf, names_final, output, hetProp, outputfile, format, excludeMix, no.Cores, LowCov)
+    MixInfect2_vcfProcess(vcf, names_final, output, hetProp, outputfile, MixRepeatFile, format, excludeMix, no.Cores, LowCov)
   } else {
     list(vcf = vcf, names = names_final, output = output)
   }
-  vcf <- mixed_infection_info$vcf
-  names_final <- mixed_infection_info$names
-  output <- mixed_infection_info$output
-  print("Before missing")
+  if (excludeMix){
+    vcf <- mixed_infection_info$vcf
+    names_final <- mixed_infection_info$names
+    output <- mixed_infection_info$output
+  }
   missing_data_info <- remove_snps_with_high_missing_data(output, vcf, misPercent)
   output <- missing_data_info$output
   vcf <- missing_data_info$vcf
-  print("Before writing")
+  
   write_output_files(output, vcf, outputfile, names_final, head_start, header)
-
+  
   if (processIndel && nrow(indels) != 0) {
     if (is.null(indelfiles)) {
       indel_header <- header
@@ -128,9 +138,9 @@ vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.
 }
 
 option_list <- list(
-  make_option(c("--inputfiles"), type = "character", action = "append", help = "Input VCF files", metavar = "character"),
-  make_option(c("--outputfile"), type = "character", default = "output", help = "Prefix for output files", metavar = "character"),
-  make_option(c("--indelfiles"), type = "character", action = "append", help = "Names of files containing INDELs if separate to SNPs", metavar = "character"),
+  make_option(c("-i","--inputfiles"), type = "character", action = "store", help = "Input VCF files, comma-separated", metavar = "character"),
+  make_option(c("-o","--outputfile"), type = "character", default = "output", help = "Prefix for output files", metavar = "character"),
+  make_option(c("--indelfiles"), type = "character", action = "store", help = "Names of files containing INDELs if separate to SNPs, comma-separated", metavar = "character"),
   make_option(c("-c", "--no.Cores"), type = "integer", default = 1, help = "Number of CPU cores to use", metavar = "integer"),
   make_option(c("--samples2remove"), type = "character", default = NULL, help = "Samples to remove from multisample inputs", metavar = "character"),
   make_option(c("--samples2include"), type = "character", default = NULL, help = "Samples to include from multisample inputs", metavar = "character"),
@@ -142,6 +152,7 @@ option_list <- list(
   make_option(c("--hetasN"), type = "logical", default = TRUE, help = "Code hSNPs as 'N' or by FASTA nucleic acid code", metavar = "logical"),
   make_option(c("--misPercent"), type = "integer", default = 90, help = "Percentage of sites missing across samples to remove variant", metavar = "integer"),
   make_option(c("--repeatfile"), type = "character", default = NULL, help = ".csv file with start and stop coordinates for regions to remove variants", metavar = "character"),
+  make_option(c("--MixRepeatFile"), type = "character", default = NULL, help = ".csv file with start and stop coordinates for regions to mask when running MixInfect (can be NULL if repeatfile specified, otherwise will generate warning)", metavar = "character"),
   make_option(c("--disINDEL"), type = "integer", default = NULL, help = "Remove SNPs within int distance of INDELs", metavar = "integer"),
   make_option(c("--MixInfect2"), type = "logical", default = TRUE, help = "Run MixInfect2 to test for mixed infections", metavar = "logical"),
   make_option(c("--excludeMix"), type = "logical", default = FALSE, help = "Remove samples with a high likelihood of mixed infection", metavar = "logical")
@@ -151,16 +162,24 @@ option_list <- list(
 opt_parser <- OptionParser(option_list = option_list)
 opt <- parse_args(opt_parser)
 
+# Split comma-separated inputs into lists
+if (!is.null(opt$inputfiles)) {
+  opt$inputfiles <- strsplit(opt$inputfiles, ",")[[1]]
+}
+if (!is.null(opt$indelfiles)) {
+  opt$indelfiles <- strsplit(opt$indelfiles, ",")[[1]]
+}
+
+
 # Check if input files are provided
-if (is.null(opt$inputfiles)) {
+if (is.null(opt$inputfiles) || length(opt$inputfiles) == 0) {
   print_help(opt_parser)
   stop("At least one input file must be provided.", call. = FALSE)
 }
 
+
 # Run the function with parsed options
 vcfProcess(opt$inputfiles, opt$outputfile, opt$indelfiles, opt$no.Cores, opt$samples2remove, opt$samples2include,
            opt$filter, opt$processIndel, opt$DP_low, opt$lowqual, opt$hetProp, opt$hetasN, opt$misPercent,
-           opt$repeatfile, opt$disINDEL, opt$MixInfect2, opt$excludeMix)
+           opt$repeatfile, opt$MixRepeatFile, opt$disINDEL, opt$MixInfect2, opt$excludeMix)
 
-
-                           
