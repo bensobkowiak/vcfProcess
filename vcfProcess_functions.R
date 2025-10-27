@@ -197,7 +197,7 @@ remove_variants_in_repeat_regions <- function(output, vcf, repeatfile, outputfil
     rep <- as.data.frame(read.csv(repeatfile, header = TRUE))
     res1 <- vector()
     for (i in 1:nrow(rep)) {
-      re <- c(rep[i, 1]:rep[i, 2])
+      re <- c(rep[i, which(colnames(rep)=="START")]:rep[i, which(colnames(rep)=="STOP")])
       res1 <- c(res1, re)
     }
     res <- is.element(as.numeric(vcf[, 2]), res1)
@@ -257,8 +257,9 @@ write_output_files <- function(output, vcf, outputfile, names, head_start, heade
   colnames(output) <- names
   Reference <- as.character(vcf[, 4])
   Position <- vcf[, 2]
-  write.table(data.frame(SNP=1:length(Position),Position=Position), file = paste0(outputfile, "_SNPsIndex_with_ref.txt"), row.names = FALSE, sep = "\t", quote = FALSE)
-  forcsv <- cbind(Position, Reference, output)
+  Chromosome <- vcf[, 1]
+  write.table(data.frame(Chromosome = Chromosome, SNP=1:length(Position),Position=Position), file = paste0(outputfile, "_SNPsIndex_with_ref.txt"), row.names = FALSE, sep = "\t", quote = FALSE)
+  forcsv <- cbind(Chromosome,Position, Reference, output)
   write.csv(forcsv, file = paste0(outputfile, "_SNPs_with_ref.csv"), row.names = FALSE)
   
   namesfasta <- c("Reference", names)
@@ -280,8 +281,8 @@ write_output_files <- function(output, vcf, outputfile, names, head_start, heade
   
   Reference <- as.character(vcf[, 4])
   Position <- vcf[, 2]
-  write.table(data.frame(SNP=1:length(Position),Position=Position), file = paste0(outputfile, "_SNPsIndex.txt"), row.names = FALSE, sep = "\t", quote = FALSE)
-  forcsv <- cbind(Position, Reference, output)
+  write.table(data.frame(Chromosome=Chromosome, SNP=1:length(Position),Position=Position), file = paste0(outputfile, "_SNPsIndex.txt"), row.names = FALSE, sep = "\t", quote = FALSE)
+  forcsv <- cbind(Chromosome, Position, Reference, output)
   names(forcsv) <- c("Position", namesfasta)
   write.csv(forcsv, file = paste0(outputfile, "_SNPs.csv"), row.names = FALSE)
   output_fast <- t(output)
