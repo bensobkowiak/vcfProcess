@@ -1,185 +1,220 @@
-#' Filter VCF files and convert to FASTA and CSV files
-#' @param inputfiles Single or multisample SNP or SNP/INDEL VCF file
-#' @param outputfile Prefix for output files
-#' @param indelfiles Name of file containing INDELs file if separate to SNPs
-#' @param no.Cores Number of CPU cores to use - if >1, script will run some parallelization 
-#' @param samples2remove Samples to remove from multisample inputs, can be string or .txt file in single column (default=NULL)
-#' @param samples2include Samples to include from multisample inputs, can be string or .txt file in single column (default=NULL (keep all samples))
-#' @param processIndel Process INDEL variants (requires indelProcess_vcfProcess.R)
-#' @param DP_low Minimum read depth to consider call (default=5)
-#' @param lowqual Minimum variant quality to consider call (defauly=20)
-#' @param hetProp Proportion allele frequency at hSNPs to assign call (default=0.9)
-#' @param hetasN Code hSNPs as 'N' (TRUE) or by FASTA nucleic acid code (FALSE)
-#' @param misPercent Percentage of sites missing across samples to remove variant (default=90)
-#' @param repeatfile .csv file with start and stop coordinates for regions to mask
-#' @param MixRepeatFile .csv file with start and stop coordinates for regions to mask when running MixInfect (can be NULL if repeatfile specified, otherwise will generate warning)
-#' @param disINDEL Remove SNPs within int distance of INDELs 
-#' @param MixInfect2 If TRUE, run MixInfect2 to test for mixed infections, if excludeMix = TRUE, will remove samples with a high likelihood of mixed infection (requires MixInfect2_vcfProcess.R)
-#' @param LowCov Lowest read depth at mixed sites for MixInfect2 (default = 10)
-#' @return filtered .vcf and .csv variant files, optional INDEL and mixed infection files
-#' @export
+##########################################################################################################################
+###################### MixInfect2 - VCFprocess #################################################
+##########################################################################################################################
 
-if (!require("stringr")) { install.packages("stringr") }
-if (!require("seqinr")) { install.packages("seqinr") }
-if (!require("optparse")) { install.packages("optparse") }
-if (!require("foreach")) { install.packages("foreach") }
-if (!require("doMC")) { install.packages("doMC") }
+if (!require("mclust")){install.packages("mclust")}
+if (!require("stringr")){install.packages("stringr")}
+if (!require("optparse")){install.packages("optparse")}
+if (!require("foreach")){install.packages("foreach")}
+if (!require("doMC")){install.packages("doMC")}
 
-library(seqinr)
+library(mclust)
 library(stringr)
 library(optparse)
 library(foreach)
 library(doMC)
 
+MixInfect2_vcfProcess <- function(vcf, names, output, hetProp, outputfile, MixRepeatFile, format, excludeMix, no.Cores, LowCov) {
+  
+  # Register the number of threads for parallel processing
+  registerDoMC(cores = no.Cores)
+  
+  vcf<-vcf
+  names<-names
+  output<-output
+  hetProp<-hetProp
+  outputfile<-outputfile
+  format<-format
+  SNPwindow<-100
+  excludeMix<-excludeMix
+  MixRepeatFile<-MixRepeatFile
+  
+  repeat_info <- remove_variants_in_repeat_regions(output, vcf, MixRepeatFile, outputfile, names)
+  output_mask <- repeat_info$output
+  vcf_mask <- repeat_info$vcf
+  
+  ## 
+  
+  # Determine AD field and create matrix of AD and GT
+  AD <- which(unlist(str_split(vcf_mask[1, format], ":")) == 'AD')
+  GT <- which(unlist(str_split(vcf_mask[1, format], ":")) == 'GT')
+  DP <- which(unlist(str_split(vcf_mask[1, format], ":")) == 'DP')
+  
+  # Make new matrices of separated GT, DP, and AD fields
+  GT_mat <- matrix(ncol = length((format + 1):ncol(vcf_mask)), nrow = nrow(vcf_mask))
+  AD_mat <- matrix(ncol = length((format + 1):ncol(vcf_mask)), nrow = nrow(vcf_mask))
+  DP_mat <- matrix(ncol = length((format + 1):ncol(vcf_mask)), nrow = nrow(vcf_mask))
+  for (i in 1:ncol(GT_mat)) {
+    GT_mat[, i] <- sapply(str_split(vcf_mask[, i + format], ":"), "[[", GT)
+    newDP <- str_split(vcf_mask[, i + format], ":")
+    newDP <- lapply(newDP, function(x) if (length(x) < 3) c(x, 0) else x)
+    DP_mat[, i] <- sapply(newDP, "[[", DP)
+    AD_mat[, i] <- sapply(str_split(vcf_mask[, i + format], ":"), "[[", AD)
+  }
+  
+  DP_mat[which(DP_mat == ".")] <- "0"
+  GT_mat[which(as.numeric(DP_mat) < LowCov)] <- "?"
+  
+  # Create output_mask file
+  outfile <- as.data.frame(matrix(NA, nrow = length(names), ncol = 7))
+  colnames(outfile) <- c("SampleName", "Mix.Non-mix", "hSNPs", "Total.SNPs", 
+                         "Proportion.hSNPs_totalSNPs", "No.strains", "Major.strain.proportion")
+  outfile[, 1] <- names
+  
+  # Identify mixed calls
+  mixed_calls <- c("0/1", "0/2", "0/3", "1/2", "1/3", "2/3",
+                   "0|1", "0|2", "0|3", "1|2", "1|3", "2|3")
+  alt_calls <- c("1/1", "2/2", "3/3", "1|1", "2|2", "3|3")
+  
+  # Process AD fields to identify mixed calls
+  for (col in 1:ncol(AD_mat)) {
+    ADmix <- str_split(AD_mat[, col], ",")
+    for (m in 1:length(ADmix)) {
+      AD_site <- as.numeric(unlist(ADmix[m]))
+      AD_site <- AD_site[AD_site != 0]
+      if (length(AD_site) > 1) {
+        AD_site <- AD_site[order(AD_site, decreasing = TRUE)]
+        if (AD_site[2] >= LowCov) {
+          GT_mat[m, col] <- "0/1"
+        }
+      }
+    }
+  }
+  
+  # Mask sites with mixed frequency over popFreq_threshold
+  propMix <- numeric()
+  for (i in 1:nrow(GT_mat)) {
+    propMix[i] <- length(which(GT_mat[i, ] %in% mixed_calls)) / ncol(GT_mat)
+  }
+  propMix <- which(propMix > 0.1)
+  if (length(propMix) > 0) {
+    GT_mat <- GT_mat[-propMix, ]
+    vcf_mask <- vcf_mask[-propMix, ]
+  }
+  
+  # Keep loci with an alternative or mixed call
+  keep <- apply(as.data.frame(GT_mat), 1, function(row) {
+    any(row %in% c(mixed_calls, alt_calls))
+  })
+  GT_mat <- GT_mat[keep, ]
+  vcf_mask <- vcf_mask[keep, ]
+  output_mask <- output_mask[keep,]
+  
+  # Calculate hSNPs, total SNPs, and proportions
+  mixes <- matrix(0, ncol = ncol(GT_mat), nrow = 4)
+  for (i in 1:ncol(GT_mat)) {
+    mixes[1, i] <- length(which(GT_mat[, i] %in% mixed_calls))
+  }
+  for (i in 1:ncol(GT_mat)) {
+    mixes[2, i] <- length(which(GT_mat[, i] %in% alt_calls))
+  }
+  for (i in 1:ncol(GT_mat)) {
+    mixes[3, i] <- mixes[1, i] + mixes[2, i]
+  }
+  for (i in 1:ncol(GT_mat)) {
+    mixes[4, i] <- (mixes[1, i] / mixes[3, i]) * 100
+  }
+  
+  outfile[, 3] <- mixes[1, ]
+  outfile[, 4] <- mixes[3, ]
+  outfile[, 5] <- round(mixes[4, ],2)
+  outfile[, 2] <- 'Non-mix'
+  outfile[, 6] <- 1
+  
+  #################### ESTIMATE PROPORTIONS OF MIXED SAMPLES #######################
+  
+  mixnames <- outfile$SampleName[which(outfile[, 5] > 1.5 & outfile[, 3] > 10)]
+  mix_GT <- as.data.frame(GT_mat[, which(outfile[, 5] > 1.5 & outfile[, 3] > 10)])
+  mix_VCF <- as.data.frame(vcf_mask[, which(outfile[, 5] > 1.5 & outfile[, 3] > 10) + format])
+  positions <- vcf_mask[, 2]
+  
+  if (length(mixnames) > 0) {
+    BICvalues <- data.frame(Sample = mixnames, G2 = NA_real_, G4 = NA_real_, G6 = NA_real_)
+    
+    results <- foreach(i=1:nrow(BICvalues)) %dopar% {
+      samplemix_sites <- mix_VCF[which(mix_GT[, i] %in% mixed_calls), i]
+      samplemix_AD <- sapply(str_split(samplemix_sites, ":"), "[[", AD)
+      samplePos <- positions[which(mix_GT[, i] %in% mixed_calls)]
+      samplemaj_prop <- numeric()
+      samplemin_prop <- numeric()
+      finalPos <- numeric()
+      for (k in 1:length(samplemix_AD)) {
+        sampleAD <- as.numeric(unlist(str_split(samplemix_AD[k], ",")))
+        sampleAD <- sampleAD[sampleAD != 0]
+        sampleAD <- sampleAD[order(sampleAD, decreasing = TRUE)]
+        if (length(sampleAD) == 2) {
+          samplemaj_prop <- c(samplemaj_prop, sampleAD[1] / sum(sampleAD))
+          samplemin_prop <- c(samplemin_prop, sampleAD[2] / sum(sampleAD))
+          finalPos <- c(finalPos, samplePos[k])
+        }
+      }
+      
+      distances <- diff(finalPos)
+      group_indices <- c(1, cumsum(distances >= SNPwindow) + 1)
+      samplemaj_prop <- tapply(samplemaj_prop, group_indices, median)
+      samplemin_prop <- tapply(samplemin_prop, group_indices, median)
+      b <- c(samplemaj_prop, samplemin_prop)
+      
+      bic_values <- c(NA_real_, NA_real_, NA_real_)
+      mix_status <- 'Non-mix'
+      no_strains <- 1
+      major_strain_proportion <- NA_real_
+      
+      if (length(b) > LowCov) {
+        a <- mclustBIC(b, G = c(2, 4, 6), verbose = FALSE)[, 2]
+        if (length(a) == 3) {
+          bic_values <- a
+        }
+        
+        d <- Mclust(b, G = 2, verbose = FALSE)
+        if (!is.na(bic_values[1]) && bic_values[1] >= 20) {
+          mix_status <- 'Mix'
+          no_strains <- 2
+          major_strain_proportion <- d$parameters$mean[order(d$parameters$mean, decreasing = TRUE)][1]
+        } else if (!is.na(bic_values[3]) && bic_values[3] >= 20) {
+          d <- Mclust(b, G = 6, verbose = FALSE)
+          mix_status <- 'Mix'
+          no_strains <- 3
+          means <- d$parameters$mean[order(d$parameters$mean, decreasing = TRUE)]
+          if (sum(means[5:6]) < 0.5) {
+            major_strain_proportion <- means[3]
+          } else {
+            major_strain_proportion <- means[4]
+          }
+        }
+      }
+      print(paste("Processed sample", i))
+      return(c(i, bic_values, mix_status, no_strains, major_strain_proportion))
+    }
+    
+    for (res in 1:length(results)) {
+      i <- as.numeric(unlist(results[res])[1])
+      BICvalues[i, 2:4] <- as.numeric(unlist(results[res])[2:4])
+      ind <- which(BICvalues$Sample[i] == outfile$SampleName)
+      outfile[ind, 2] <- unlist(results[res])[5]
+      outfile[ind, 6] <- as.numeric(unlist(results[res])[6])
+      outfile[ind, 7] <- round(as.numeric(unlist(results[res])[7]),2)
+    }
+    
+    BICvalues <- BICvalues[which(BICvalues$Sample %in% outfile$SampleName[which(outfile$`Mix.Non-mix` == "Mix")]), ]
+    write.csv(BICvalues, paste0(outputfile, "_BICvalues.csv"), row.names = FALSE)
+    write.csv(outfile, paste0(outputfile, "_MixSampleSummary.csv"), row.names = FALSE)
+    
+    if (excludeMix){
+      mixed<-which(outfile[,2]=="Mix")
+      newoutput<-output[,-mixed]
+      names<-names[-mixed]
+      newvcf<-vcf[,-(mixed+9)]
+      
+      ## Remove invariant sites in remaining samples
+      removedInvariant<-remove_invariant_sites(newoutput,newvcf)
+      output<-removedInvariant$output
+      vcf<-removedInvariant$vcf
 
-vcfProcess <- function(inputfiles, outputfile = "output", indelfiles = NULL, no.Cores = 1, samples2remove = NULL, samples2include = NULL, filter = TRUE,
-                       processIndel = FALSE, DP_low = 5, lowqual = 20, hetProp = 0.9, hetasN = TRUE, misPercent = 90,
-                       repeatfile = NULL, MixRepeatFile = NULL, disINDEL = NULL, MixInfect2 = TRUE, LowCov = 10, excludeMix = FALSE) {
-  
-  source("~/Documents/Scripts/vcfProcess_functions.R")
-  source("~/Documents/Scripts/MixInfect2_vcfProcess.R")
-  source("~/Documents/Scripts/indelProcess_vcfProcess.R")
-  
-  header_info <- get_vcf_header(inputfiles[1])
-  header <- header_info$header
-  names <- header_info$names
-  head_start <- names[1:9]
-  format <- which(names == 'FORMAT')
-  names <- names[10:length(names)]
-  names_all<-names
-  filterCol <- which(head_start == "FILTER")
-  
-  if (is.null(MixRepeatFile)){
-    if (!is.null(repeatfile)){
-      MixRepeatFile <- repeatfile
-    } else {
-      sprintf("Warning! No masking file specified for MixInfect2, number of mixed infections likely overestimated. Consider re-running with a masking file")
     }
-  }
-  
-  for (vf in 1:length(inputfiles)) {
-    vcf_n <- read_vcf(inputfiles[vf])
-    if (!is.null(indelfiles)) {
-      indelvcf_n <- read_vcf(indelfiles[vf])
-      indel_header_info <- get_vcf_header(indelfiles[vf])
-      indel_header <- indel_header_info$header
-      vcf_n <- rbind(vcf_n, indelvcf_n)
-    }
-    
-    output_vf<-paste0(outputfile, "_", vf)
-    
-    sample_info <- remove_or_include_samples(vcf_n, names, samples2remove, samples2include)
-    vcf_n <- sample_info$vcf
-    names_final <- sample_info$names
-    
-    vcf_n <- filter_variants(vcf_n, output_vf, filterCol, filter,head_start,names_final)
-    vcf_n <- remove_low_quality_variants(vcf_n, output_vf, lowqual, head_start, names_final)
-    vcf_n <- remove_spanning_deletions(vcf_n, output_vf, head_start, names_final)
-    
-    indel_info_n <- process_indels(vcf_n, head_start, names_final)
-    vcf_n <- indel_info_n$vcf
-    indels_n <- indel_info_n$indels
-    indelPos_n <- indel_info_n$indelPos
-    
-    allele_info_n <- assign_alleles(vcf_n, names_final, head_start, no.Cores, hetProp, hetasN, DP_low)
-    output_n <- allele_info_n$output
-    read <- allele_info_n$read
-    
-    output_n <- mark_low_read_positions(output_n, read, DP_low)
-    
-    invariant_info <- remove_invariant_sites(output_n, vcf_n)
-    output_n <- invariant_info$output
-    vcf_n <- invariant_info$vcf
-    
-    repeat_info <- remove_variants_in_repeat_regions(output_n, vcf_n, repeatfile, output_vf, names_final)
-    output_n <- repeat_info$output
-    vcf_n <- repeat_info$vcf
-    
-    indel_info <- remove_snps_within_distance_of_indels(output_n, vcf_n, indelPos_n, disINDEL, output_vf, names_final)
-    output_n <- indel_info$output
-    vcf_n <- indel_info$vcf
-    
-    if (exists("vcf")){
-      vcf <- rbind(vcf, vcf_n)
-      indels <- rbind(indels, indels_n)
-      output<-rbind(output,output_n)
-    } else {
-      vcf <- vcf_n
-      indels <- indels_n
-      output<-output_n
-    }
-  }
-  print("finished allele calling")
-  
-  mixed_infection_info <- if (MixInfect2) {
-    MixInfect2_vcfProcess(vcf, names_final, output, hetProp, outputfile, MixRepeatFile, format, excludeMix, no.Cores, LowCov)
   } else {
-    list(vcf = vcf, names = names_final, output = output)
+    print("No mixed infection")
   }
-  if (excludeMix){
-    vcf <- mixed_infection_info$vcf
-    names_final <- mixed_infection_info$names
-    output <- mixed_infection_info$output
-  }
-  missing_data_info <- remove_snps_with_high_missing_data(output, vcf, misPercent)
-  output <- missing_data_info$output
-  vcf <- missing_data_info$vcf
-  
-  write_output_files(output, vcf, outputfile, names_final, head_start, header)
-  
-  if (processIndel && nrow(indels) != 0) {
-    if (is.null(indelfiles)) {
-      indel_header <- header
-    }
-    indelfile <- indelProcess(indels, indel_header, names_final, format, hetProp, DP_low, outputfile, repeatfile, misPercent)
-  } else {
-    print("No indels")
-  }
+  return(list(vcf=vcf,names=names,output=output))
 }
-
-option_list <- list(
-  make_option(c("-i","--inputfiles"), type = "character", action = "store", help = "Input VCF files, comma-separated", metavar = "character"),
-  make_option(c("-o","--outputfile"), type = "character", default = "output", help = "Prefix for output files", metavar = "character"),
-  make_option(c("--indelfiles"), type = "character", action = "store", help = "Names of files containing INDELs if separate to SNPs, comma-separated", metavar = "character"),
-  make_option(c("-c", "--no.Cores"), type = "integer", default = 1, help = "Number of CPU cores to use", metavar = "integer"),
-  make_option(c("--samples2remove"), type = "character", default = NULL, help = "Samples to remove from multisample inputs", metavar = "character"),
-  make_option(c("--samples2include"), type = "character", default = NULL, help = "Samples to include from multisample inputs", metavar = "character"),
-  make_option(c("--filter"), type = "logical", default = TRUE, help = "Use the 'FILTER' column in VCF file to filter SNPs", metavar = "logical"),
-  make_option(c("--processIndel"), type = "logical", default = FALSE, help = "Process INDEL variants", metavar = "logical"),
-  make_option(c("--DP_low"), type = "integer", default = 5, help = "Minimum read depth to consider call", metavar = "integer"),
-  make_option(c("--lowqual"), type = "integer", default = 20, help = "Minimum variant quality to consider call", metavar = "integer"),
-  make_option(c("--hetProp"), type = "numeric", default = 0.9, help = "Proportion allele frequency at hSNPs to assign call", metavar = "numeric"),
-  make_option(c("--hetasN"), type = "logical", default = TRUE, help = "Code hSNPs as 'N' or by FASTA nucleic acid code", metavar = "logical"),
-  make_option(c("--misPercent"), type = "integer", default = 90, help = "Percentage of sites missing across samples to remove variant", metavar = "integer"),
-  make_option(c("--repeatfile"), type = "character", default = NULL, help = ".csv file with start and stop coordinates for regions to remove variants", metavar = "character"),
-  make_option(c("--MixRepeatFile"), type = "character", default = NULL, help = ".csv file with start and stop coordinates for regions to mask when running MixInfect (can be NULL if repeatfile specified, otherwise will generate warning)", metavar = "character"),
-  make_option(c("--disINDEL"), type = "integer", default = NULL, help = "Remove SNPs within int distance of INDELs", metavar = "integer"),
-  make_option(c("--MixInfect2"), type = "logical", default = TRUE, help = "Run MixInfect2 to test for mixed infections", metavar = "logical"),
-  make_option(c("--excludeMix"), type = "logical", default = FALSE, help = "Remove samples with a high likelihood of mixed infection", metavar = "logical")
-)
-
-# Parse command-line options
-opt_parser <- OptionParser(option_list = option_list)
-opt <- parse_args(opt_parser)
-
-# Split comma-separated inputs into lists
-if (!is.null(opt$inputfiles)) {
-  opt$inputfiles <- strsplit(opt$inputfiles, ",")[[1]]
-}
-if (!is.null(opt$indelfiles)) {
-  opt$indelfiles <- strsplit(opt$indelfiles, ",")[[1]]
-}
-
-
-# Check if input files are provided
-if (is.null(opt$inputfiles) || length(opt$inputfiles) == 0) {
-  print_help(opt_parser)
-  stop("At least one input file must be provided.", call. = FALSE)
-}
-
-
-# Run the function with parsed options
-vcfProcess(opt$inputfiles, opt$outputfile, opt$indelfiles, opt$no.Cores, opt$samples2remove, opt$samples2include,
-           opt$filter, opt$processIndel, opt$DP_low, opt$lowqual, opt$hetProp, opt$hetasN, opt$misPercent,
-           opt$repeatfile, opt$MixRepeatFile, opt$disINDEL, opt$MixInfect2, opt$excludeMix)
-
+                    
